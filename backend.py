@@ -202,15 +202,63 @@ class RAGBackend:
 
         return (len(chunks), inserted)
 
+    def ingest_text(self, text: str, doc_name: str) -> Tuple[int, int]:
+        """
+        Ingest raw text as a document. Returns (num_chunks, num_inserted).
+        """
+        name = os.path.basename(doc_name) if doc_name else f"pasted-{_now_ts()}"
+        text = (text or "").strip()
+        if not text:
+            return (0, 0)
+
+        cur = self._conn.cursor()
+        cur.execute(
+            "INSERT OR IGNORE INTO documents(name, created_at) VALUES (?, ?)",
+            (name, _now_ts()),
+        )
+        self._conn.commit()
+
+        splitter = self._get_text_splitter()
+        chunks = splitter.split_text(text)
+        if not chunks:
+            return (0, 0)
+
+        embedder = self._get_embedder()
+        embeddings = embedder.encode(chunks, normalize_embeddings=False)
+
+        inserted = 0
+        for idx, (chunk_text, emb_vec) in enumerate(zip(chunks, embeddings)):
+            emb_json = json.dumps(emb_vec.tolist())
+            try:
+                cur.execute(
+                    """
+                    INSERT OR REPLACE INTO chunks(doc_name, chunk_index, text, embedding, created_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (name, idx, chunk_text, emb_json, _now_ts()),
+                )
+                inserted += 1
+            except Exception:
+                continue
+        self._conn.commit()
+        return (len(chunks), inserted)
+
     # -------------------------
     # Retrieval
     # -------------------------
-    def search(self, query: str, top_k: int = 4) -> List[RetrievedChunk]:
+    def search(self, query: str, top_k: int = 4, doc_names: Optional[List[str]] = None) -> List[RetrievedChunk]:
         embedder = self._get_embedder()
         q_emb = np.array(embedder.encode([query])[0], dtype=np.float32)
 
         cur = self._conn.cursor()
-        cur.execute("SELECT doc_name, chunk_index, text, embedding FROM chunks")
+        if doc_names:
+            placeholders = ",".join(["?"] * len(doc_names))
+            cur.execute(
+                f"SELECT doc_name, chunk_index, text, embedding FROM chunks WHERE doc_name IN ({placeholders})",
+                tuple(doc_names),
+            )
+        else:
+            cur.execute("SELECT doc_name, chunk_index, text, embedding FROM chunks")
         rows = cur.fetchall()
         if not rows:
             return []
@@ -230,8 +278,8 @@ class RAGBackend:
     # -------------------------
     # LLM Answering (Groq)
     # -------------------------
-    def answer(self, query: str, top_k: int = 4, model: str = "llama-3.1-8b-instant") -> Tuple[str, List[RetrievedChunk]]:
-        retrieved = self.search(query, top_k=top_k)
+    def answer(self, query: str, top_k: int = 4, model: str = "llama-3.1-8b-instant", doc_names: Optional[List[str]] = None) -> Tuple[str, List[RetrievedChunk]]:
+        retrieved = self.search(query, top_k=top_k, doc_names=doc_names)
 
         if not retrieved:
             return ("Not found in provided text.", [])
@@ -259,6 +307,28 @@ class RAGBackend:
         resp = chat.invoke(messages)
         answer_text = resp.content if hasattr(resp, "content") else str(resp)
         return (answer_text.strip(), retrieved)
+
+    def answer_with_text(self, context_text: str, query: str, model: str = "llama-3.1-8b-instant") -> str:
+        """Answer using only provided raw context text (no retrieval)."""
+        context_text = (context_text or "").strip()
+        if not context_text:
+            return "Not found in provided text."
+
+        system_prompt = (
+            "You are a helpful assistant.\n"
+            "Use ONLY the context below to answer the question.\n"
+            "If the answer is not in the context, say: \"Not found in provided text.\"\n\n"
+            "Answer with citations in [doc:chunk] format if labels are provided."
+        )
+        user_prompt = (
+            f"Context:\n{context_text}\n\n"
+            f"Question:\n{query}"
+        )
+
+        chat = ChatGroq(temperature=0.0, model_name=model)
+        messages = [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)]
+        resp = chat.invoke(messages)
+        return (resp.content if hasattr(resp, "content") else str(resp)).strip()
 
     # -------------------------
     # Documents & Chunks
