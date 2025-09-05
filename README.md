@@ -57,3 +57,4 @@ streamlit run app.py
 ## Deploy
 - Works locally via `streamlit run app.py`
 - For Streamlit Cloud/Render/Railway, set environment variable `GROQ_API_KEY` and deploy the repo.
+- LINK: https://mkr2177-mini-rag-app-b1g0hh.streamlit.app/
