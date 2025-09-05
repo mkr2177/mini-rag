@@ -51,8 +51,7 @@ streamlit run app.py
 - Retrieval uses cosine similarity over stored vectors.
 
 ## Resume
-- Resume: https://example.com/your-resume  
-  (Replace with your actual resume link.)
+- Resume: https://drive.google.com/file/d/18jJ5Vu5udj0xlEw8em66jRxEhmIU-sqw/view?usp=drive_link
 
 ## Deploy
 - Works locally via `streamlit run app.py`
